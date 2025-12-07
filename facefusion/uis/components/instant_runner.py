@@ -15,6 +15,8 @@ from facefusion.uis.ui_helper import suggest_output_path
 
 INSTANT_RUNNER_WRAPPER : Optional[gradio.Row] = None
 INSTANT_RUNNER_START_BUTTON : Optional[gradio.Button] = None
+INSTANT_RUNNER_PREPROCESS_BUTTON : Optional[gradio.Button] = None
+INSTANT_RUNNER_CONTINUE_BUTTON : Optional[gradio.Button] = None
 INSTANT_RUNNER_STOP_BUTTON : Optional[gradio.Button] = None
 INSTANT_RUNNER_CLEAR_BUTTON : Optional[gradio.Button] = None
 
@@ -22,6 +24,8 @@ INSTANT_RUNNER_CLEAR_BUTTON : Optional[gradio.Button] = None
 def render() -> None:
 	global INSTANT_RUNNER_WRAPPER
 	global INSTANT_RUNNER_START_BUTTON
+	global INSTANT_RUNNER_PREPROCESS_BUTTON
+	global INSTANT_RUNNER_CONTINUE_BUTTON
 	global INSTANT_RUNNER_STOP_BUTTON
 	global INSTANT_RUNNER_CLEAR_BUTTON
 
@@ -30,9 +34,21 @@ def render() -> None:
 
 		with gradio.Row(visible = is_instant_runner) as INSTANT_RUNNER_WRAPPER:
 			INSTANT_RUNNER_START_BUTTON = gradio.Button(
-				value = translator.get('uis.start_button'),
+				value = translator.get('uis.start_button') or 'Start',
 				variant = 'primary',
 				size = 'sm'
+			)
+			INSTANT_RUNNER_PREPROCESS_BUTTON = gradio.Button(
+				value = translator.get('uis.preprocess_button') or 'Preprocess',
+				variant = 'secondary',
+				size = 'sm',
+				visible = is_video(state_manager.get_item('target_path'))
+			)
+			INSTANT_RUNNER_CONTINUE_BUTTON = gradio.Button(
+				value = translator.get('uis.continue_button') or 'Continue',
+				variant = 'secondary',
+				size = 'sm',
+				visible = is_video(state_manager.get_item('target_path'))
 			)
 			INSTANT_RUNNER_STOP_BUTTON = gradio.Button(
 				value = translator.get('uis.stop_button'),
@@ -54,8 +70,18 @@ def listen() -> None:
 	if output_image and output_video:
 		INSTANT_RUNNER_START_BUTTON.click(start, outputs = [ INSTANT_RUNNER_START_BUTTON, INSTANT_RUNNER_STOP_BUTTON ])
 		INSTANT_RUNNER_START_BUTTON.click(run, outputs = [ INSTANT_RUNNER_START_BUTTON, INSTANT_RUNNER_STOP_BUTTON, output_image, output_video ])
+		INSTANT_RUNNER_PREPROCESS_BUTTON.click(start, outputs = [ INSTANT_RUNNER_PREPROCESS_BUTTON, INSTANT_RUNNER_STOP_BUTTON ])
+		INSTANT_RUNNER_PREPROCESS_BUTTON.click(run_preprocess, outputs = [ INSTANT_RUNNER_PREPROCESS_BUTTON, INSTANT_RUNNER_STOP_BUTTON, output_image, output_video ])
+		INSTANT_RUNNER_CONTINUE_BUTTON.click(start, outputs = [ INSTANT_RUNNER_CONTINUE_BUTTON, INSTANT_RUNNER_STOP_BUTTON ])
+		INSTANT_RUNNER_CONTINUE_BUTTON.click(run_continue, outputs = [ INSTANT_RUNNER_CONTINUE_BUTTON, INSTANT_RUNNER_STOP_BUTTON, output_image, output_video ])
 		INSTANT_RUNNER_STOP_BUTTON.click(stop, outputs = [ INSTANT_RUNNER_START_BUTTON, INSTANT_RUNNER_STOP_BUTTON, output_image, output_video ])
 		INSTANT_RUNNER_CLEAR_BUTTON.click(clear, outputs = [ output_image, output_video ])
+		
+		# Update button visibility when target changes
+		target_video = get_ui_component('target_video')
+		if target_video:
+			for method in ['change', 'clear']:
+				getattr(target_video, method)(update_button_visibility, outputs = [INSTANT_RUNNER_PREPROCESS_BUTTON, INSTANT_RUNNER_CONTINUE_BUTTON])
 	if ui_workflow_dropdown:
 		ui_workflow_dropdown.change(remote_update, inputs = ui_workflow_dropdown, outputs = INSTANT_RUNNER_WRAPPER)
 
@@ -102,9 +128,57 @@ def stop() -> Tuple[gradio.Button, gradio.Button, gradio.Image, gradio.Video]:
 	return gradio.Button(visible = True), gradio.Button(visible = False), gradio.Image(value = None), gradio.Video(value = None)
 
 
+def run_preprocess() -> Tuple[gradio.Button, gradio.Button, gradio.Image, gradio.Video]:
+	"""Run preprocessing only: setup -> extract -> preprocess"""
+	step_args = collect_step_args()
+	output_path = step_args.get('output_path')
+
+	if is_directory(step_args.get('output_path')):
+		step_args['output_path'] = suggest_output_path(step_args.get('output_path'), state_manager.get_item('target_path'))
+	
+	# Set workflow mode to preprocess_only in step_args (so it persists during job execution)
+	step_args['workflow_mode'] = 'preprocess_only'
+	
+	if job_manager.init_jobs(state_manager.get_item('jobs_path')):
+		create_and_run_job(step_args)
+		state_manager.set_item('output_path', output_path)
+	
+	return gradio.Button(visible = True), gradio.Button(visible = False), gradio.Image(value = None), gradio.Video(value = None)
+
+
+def run_continue() -> Tuple[gradio.Button, gradio.Button, gradio.Image, gradio.Video]:
+	"""Continue processing: process -> merge -> audio -> finalize (skips preprocessing if already done)"""
+	step_args = collect_step_args()
+	output_path = step_args.get('output_path')
+
+	if is_directory(step_args.get('output_path')):
+		step_args['output_path'] = suggest_output_path(step_args.get('output_path'), state_manager.get_item('target_path'))
+	
+	# Set workflow mode to continue in step_args (so it persists during job execution)
+	step_args['workflow_mode'] = 'continue'
+	
+	if job_manager.init_jobs(state_manager.get_item('jobs_path')):
+		create_and_run_job(step_args)
+		state_manager.set_item('output_path', output_path)
+	
+	if is_image(step_args.get('output_path')):
+		return gradio.Button(visible = True), gradio.Button(visible = False), gradio.Image(value = step_args.get('output_path'), visible = True), gradio.Video(value = None, visible = False)
+	if is_video(step_args.get('output_path')):
+		return gradio.Button(visible = True), gradio.Button(visible = False), gradio.Image(value = None, visible = False), gradio.Video(value = step_args.get('output_path'), visible = True)
+	return gradio.Button(visible = True), gradio.Button(visible = False), gradio.Image(value = None), gradio.Video(value = None)
+
+
+def update_button_visibility() -> Tuple[gradio.Button, gradio.Button]:
+	"""Update visibility of preprocess/continue buttons based on target type"""
+	is_video_target = is_video(state_manager.get_item('target_path'))
+	return gradio.Button(visible = is_video_target), gradio.Button(visible = is_video_target)
+
+
 def clear() -> Tuple[gradio.Image, gradio.Video]:
 	while process_manager.is_processing():
 		sleep(0.5)
 	if state_manager.get_item('target_path'):
 		clear_temp_directory(state_manager.get_item('target_path'))
+		# Clear workflow mode
+		state_manager.set_item('workflow_mode', None)
 	return gradio.Image(value = None), gradio.Video(value = None)

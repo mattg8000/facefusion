@@ -19,15 +19,88 @@ from facefusion.workflows.core import is_process_stopping
 
 
 def process(start_time : float) -> ErrorCode:
+	"""Full workflow: setup -> extract -> preprocess -> process -> merge -> audio -> finalize"""
 	tasks =\
 	[
 		setup,
 		extract_frames,
+		preprocess_faces,  # Preprocessing after frames are extracted (faster)
 		process_video,
 		merge_frames,
 		restore_audio,
 		partial(finalize_video, start_time)
 	]
+	process_manager.start()
+
+	for task in tasks:
+		error_code = task() # type:ignore[operator]
+
+		if error_code > 0:
+			process_manager.end()
+			return error_code
+
+	process_manager.end()
+	return 0
+
+
+def process_preprocess_only(start_time : float) -> ErrorCode:
+	"""Preprocess-only workflow: setup -> extract -> preprocess (stops after building database)"""
+	tasks =\
+	[
+		setup,
+		extract_frames,
+		preprocess_faces
+	]
+	process_manager.start()
+
+	for task in tasks:
+		error_code = task() # type:ignore[operator]
+
+		if error_code > 0:
+			process_manager.end()
+			return error_code
+
+	process_manager.end()
+	return 0
+
+
+def process_continue(start_time : float) -> ErrorCode:
+	"""Continue workflow: checks if preprocessing done, then processes -> merge -> audio -> finalize"""
+	# Check if preprocessing is already done (database exists and frames extracted)
+	from facefusion.video_face_database import get_video_face_database
+	from facefusion.temp_helper import resolve_temp_frame_paths
+	
+	# If preprocessing enabled, check if it's already done
+	enable_preprocessing = state_manager.get_item('enable_face_preprocessing')
+	needs_preprocessing = False
+	
+	if enable_preprocessing and is_video(state_manager.get_item('target_path')):
+		temp_frame_paths = resolve_temp_frame_paths(state_manager.get_item('target_path'))
+		database = get_video_face_database()
+		
+		# Need preprocessing if frames exist but database doesn't
+		if temp_frame_paths and database is None:
+			needs_preprocessing = True
+	
+	tasks = []
+	
+	# Only do setup/extract if frames don't exist
+	temp_frame_paths = resolve_temp_frame_paths(state_manager.get_item('target_path'))
+	if not temp_frame_paths:
+		tasks.extend([setup, extract_frames])
+	
+	# Do preprocessing if needed
+	if needs_preprocessing:
+		tasks.append(preprocess_faces)
+	
+	# Continue with processing
+	tasks.extend([
+		process_video,
+		merge_frames,
+		restore_audio,
+		partial(finalize_video, start_time)
+	])
+	
 	process_manager.start()
 
 	for task in tasks:
@@ -52,6 +125,51 @@ def setup() -> ErrorCode:
 	logger.debug(translator.get('creating_temp'), __name__)
 	create_temp_directory(state_manager.get_item('target_path'))
 	return 0
+
+
+def preprocess_faces() -> ErrorCode:
+	"""
+	Preprocess video faces: scan all extracted frames and build face database with clustering.
+	This runs AFTER frames are extracted to disk for better performance.
+	This is optional and can be enabled/disabled via state_manager.
+	"""
+	# Check if preprocessing is enabled (default: True for now, can be made configurable)
+	enable_preprocessing = state_manager.get_item('enable_face_preprocessing')
+	if enable_preprocessing is False:
+		logger.info('Face preprocessing disabled, skipping', __name__)
+		return 0
+	
+	# Only preprocess for videos
+	if not is_video(state_manager.get_item('target_path')):
+		logger.debug('Not a video, skipping face preprocessing', __name__)
+		return 0
+	
+	# Get extracted frame paths
+	temp_frame_paths = resolve_temp_frame_paths(state_manager.get_item('target_path'))
+	if not temp_frame_paths:
+		logger.warn('No extracted frames found, skipping face preprocessing', __name__)
+		return 0
+	
+	clustering_threshold = state_manager.get_item('face_clustering_threshold')
+	if clustering_threshold is None:
+		clustering_threshold = 0.35  # Default threshold
+	
+	logger.info('Starting face preprocessing on extracted frames...', __name__)
+	try:
+		from facefusion.video_face_database import preprocess_extracted_frames
+		preprocess_extracted_frames(
+			temp_frame_paths,
+			clustering_threshold
+		)
+		logger.info('Face preprocessing completed successfully', __name__)
+		return 0
+	except Exception as e:
+		logger.error(f'Face preprocessing failed: {e}', __name__)
+		import traceback
+		logger.error(traceback.format_exc(), __name__)
+		# Don't fail the whole process if preprocessing fails
+		# Just log and continue
+		return 0
 
 
 def extract_frames() -> ErrorCode:

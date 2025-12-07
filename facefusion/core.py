@@ -326,10 +326,17 @@ def process_step(job_id : str, step_index : int, step_args : Args) -> bool:
 	step_total = job_manager.count_step_total(job_id)
 	step_args.update(collect_job_args())
 	apply_args(step_args, state_manager.set_item)
+	
+	# Apply workflow_mode if present in step_args (for preprocess/continue workflows)
+	if 'workflow_mode' in step_args:
+		state_manager.set_item('workflow_mode', step_args.get('workflow_mode'))
 
 	logger.info(translator.get('processing_step').format(step_current = step_index + 1, step_total = step_total), __name__)
 	if common_pre_check() and processors_pre_check():
 		error_code = conditional_process()
+		# Clear workflow_mode after processing
+		if 'workflow_mode' in step_args:
+			state_manager.set_item('workflow_mode', None)
 		return error_code == 0
 	return False
 
@@ -344,7 +351,19 @@ def conditional_process() -> ErrorCode:
 	if is_image(state_manager.get_item('target_path')):
 		return image_to_image.process(start_time)
 	if is_video(state_manager.get_item('target_path')):
-		return image_to_video.process(start_time)
+		# Check if we should run preprocess-only or continue workflow
+		workflow_mode = state_manager.get_item('workflow_mode')
+		from facefusion import logger
+		if workflow_mode == 'preprocess_only':
+			logger.info('Running preprocess-only workflow', __name__)
+			return image_to_video.process_preprocess_only(start_time)
+		elif workflow_mode == 'continue':
+			logger.info('Running continue workflow', __name__)
+			return image_to_video.process_continue(start_time)
+		else:
+			# Default: full workflow
+			logger.info('Running full workflow', __name__)
+			return image_to_video.process(start_time)
 
 	return 0
 

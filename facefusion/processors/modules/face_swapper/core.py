@@ -744,6 +744,13 @@ def normalize_crop_frame(crop_vision_frame : VisionFrame) -> VisionFrame:
 
 
 def extract_source_face(source_vision_frames : List[VisionFrame]) -> Optional[Face]:
+	"""Extract source face - returns averaged face for backward compatibility"""
+	source_faces = extract_source_faces(source_vision_frames)
+	return get_average_face(source_faces) if source_faces else None
+
+
+def extract_source_faces(source_vision_frames : List[VisionFrame]) -> List[Face]:
+	"""Extract all source faces from source images - returns list of faces, one per source image"""
 	source_faces = []
 
 	if source_vision_frames:
@@ -754,7 +761,7 @@ def extract_source_face(source_vision_frames : List[VisionFrame]) -> Optional[Fa
 			if temp_faces:
 				source_faces.append(get_first(temp_faces))
 
-	return get_average_face(source_faces)
+	return source_faces
 
 
 def process_frame(inputs : FaceSwapperInputs) -> ProcessorOutputs:
@@ -763,12 +770,57 @@ def process_frame(inputs : FaceSwapperInputs) -> ProcessorOutputs:
 	target_vision_frame = inputs.get('target_vision_frame')
 	temp_vision_frame = inputs.get('temp_vision_frame')
 	temp_vision_mask = inputs.get('temp_vision_mask')
-	source_face = extract_source_face(source_vision_frames)
+	frame_number = inputs.get('frame_number', 0)
+	
+	# Extract all source faces
+	source_faces = extract_source_faces(source_vision_frames)
 	target_faces = select_faces(reference_vision_frame, target_vision_frame)
 
-	if source_face and target_faces:
-		for target_face in target_faces:
-			target_face = scale_face(target_face, target_vision_frame, temp_vision_frame)
-			temp_vision_frame = swap_face(source_face, target_face, temp_vision_frame)
+	if source_faces and target_faces:
+		# Get cluster-to-source mapping from state_manager
+		cluster_source_mapping = state_manager.get_item('cluster_source_mapping')
+		
+		# If no mapping or only one source, use backward-compatible behavior
+		if not cluster_source_mapping or len(source_faces) == 1:
+			source_face = get_average_face(source_faces) if source_faces else None
+			if source_face:
+				for target_face in target_faces:
+					target_face = scale_face(target_face, target_vision_frame, temp_vision_frame)
+					temp_vision_frame = swap_face(source_face, target_face, temp_vision_frame)
+		else:
+			# Multi-face mode: map each target face to appropriate source face
+			from facefusion.video_face_database import get_cluster_for_face
+			
+			for target_face_index, target_face in enumerate(target_faces):
+				target_face = scale_face(target_face, target_vision_frame, temp_vision_frame)
+				
+				# Find which source face to use for this target face
+				source_face = None
+				
+				# Try to get cluster ID for this target face from database
+				cluster_id = None
+				if frame_number is not None:
+					cluster_id = get_cluster_for_face(frame_number, target_face_index)
+				
+				# Get source face from mapping if cluster found
+				if cluster_id is not None and cluster_id in cluster_source_mapping:
+					source_index = cluster_source_mapping[cluster_id]
+					if 0 <= source_index < len(source_faces):
+						source_face = source_faces[source_index]
+				
+				# Fallback 1: Position-based matching (if no cluster mapping)
+				# Match by index: first target face → first source face, etc.
+				if source_face is None and target_face_index < len(source_faces):
+					source_face = source_faces[target_face_index]
+				
+				# Fallback 2: Use first source face or average
+				if source_face is None:
+					if len(source_faces) > 0:
+						source_face = source_faces[0]  # Use first source as default
+					else:
+						source_face = get_average_face(source_faces)
+				
+				if source_face:
+					temp_vision_frame = swap_face(source_face, target_face, temp_vision_frame)
 
 	return temp_vision_frame, temp_vision_mask

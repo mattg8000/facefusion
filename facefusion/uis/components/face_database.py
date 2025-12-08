@@ -199,6 +199,8 @@ def update_cluster_gallery(cluster_choice : Optional[str]) -> gradio.Gallery:
 		return gradio.Gallery(value = None)
 
 
+
+
 def clear_database_view() -> Tuple[gradio.Textbox, gradio.Dropdown, gradio.Gallery]:
 	return (
 		gradio.Textbox(value = 'No database available. Process a video first.'),

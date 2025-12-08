@@ -599,6 +599,7 @@ def extract_face_crop(video_path: str, frame_number: int, face_instance: FaceIns
 def get_cluster_face_crop(video_path: str, cluster_id: int, crop_size: Tuple[int, int] = (512, 512)) -> Optional[numpy.ndarray]:
 	"""
 	Extract a face crop for a cluster's representative face.
+	Uses extracted frames if available (faster), otherwise reads from video.
 	
 	Args:
 		video_path: Path to the video file
@@ -612,14 +613,40 @@ def get_cluster_face_crop(video_path: str, cluster_id: int, crop_size: Tuple[int
 	if cluster is None:
 		return None
 	
-	# Use the representative face instance
-	# Find the instance that matches the representative face
-	representative_face = cluster['representative_face']
-	
-	# Find the instance with this face (or use first instance)
+	# Use the first instance (or best quality instance)
 	instance = cluster['all_instances'][0]
+	frame_number = instance['frame_number']
 	
-	return extract_face_crop(video_path, instance['frame_number'], instance, crop_size)
+	# Try to use extracted frames first (much faster)
+	from facefusion.temp_helper import resolve_temp_frame_paths
+	temp_frame_paths = resolve_temp_frame_paths(video_path)
+	
+	if temp_frame_paths and frame_number < len(temp_frame_paths):
+		try:
+			# Read from extracted frame
+			vision_frame = read_static_image(temp_frame_paths[frame_number])
+			if vision_frame is not None and numpy.any(vision_frame):
+				# Get bounding box
+				bbox = instance['bounding_box']
+				x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+				
+				# Ensure coordinates are within frame bounds
+				height, width = vision_frame.shape[:2]
+				x1 = max(0, min(x1, width))
+				y1 = max(0, min(y1, height))
+				x2 = max(0, min(x2, width))
+				y2 = max(0, min(y2, height))
+				
+				if x2 > x1 and y2 > y1:
+					face_crop = vision_frame[y1:y2, x1:x2]
+					if crop_size:
+						face_crop = cv2.resize(face_crop, crop_size, interpolation=cv2.INTER_LINEAR)
+					return face_crop
+		except Exception as e:
+			logger.debug(f'Failed to read from extracted frame, falling back to video: {e}', __name__)
+	
+	# Fallback to reading from video
+	return extract_face_crop(video_path, frame_number, instance, crop_size)
 
 
 def save_cluster_face_crops(video_path: str, output_dir: str, crop_size: Tuple[int, int] = (512, 512)) -> int:

@@ -535,17 +535,25 @@ def pre_check() -> bool:
 
 
 def pre_process(mode : ProcessMode) -> bool:
+	logger.info('[face_swapper] pre_process called', __name__)
+	
 	if not has_image(state_manager.get_item('source_paths')):
 		logger.error(translator.get('choose_image_source') + translator.get('exclamation_mark'), __name__)
 		return False
 
 	source_image_paths = filter_image_paths(state_manager.get_item('source_paths'))
+	logger.info(f'[face_swapper] Found {len(source_image_paths)} source images', __name__)
+	
 	source_frames = read_static_images(source_image_paths)
 	source_faces = get_many_faces(source_frames)
+	
+	logger.info(f'[face_swapper] Detected {len(source_faces)} source faces', __name__)
 
 	if not get_one_face(source_faces):
 		logger.error(translator.get('no_source_face_detected') + translator.get('exclamation_mark'), __name__)
 		return False
+	
+	logger.info('[face_swapper] pre_process passed', __name__)
 
 	if mode in [ 'output', 'preview' ] and not is_image(state_manager.get_item('target_path')) and not is_video(state_manager.get_item('target_path')):
 		logger.error(translator.get('choose_image_or_video_target') + translator.get('exclamation_mark'), __name__)
@@ -765,6 +773,9 @@ def extract_source_faces(source_vision_frames : List[VisionFrame]) -> List[Face]
 
 
 def process_frame(inputs : FaceSwapperInputs) -> ProcessorOutputs:
+	# Log that we're being called (at info level so it always shows)
+	if inputs.get('frame_number', 0) == 0:
+		logger.info('[face_swapper] process_frame called', __name__)
 	reference_vision_frame = inputs.get('reference_vision_frame')
 	source_vision_frames = inputs.get('source_vision_frames')
 	target_vision_frame = inputs.get('target_vision_frame')
@@ -775,13 +786,28 @@ def process_frame(inputs : FaceSwapperInputs) -> ProcessorOutputs:
 	# Extract all source faces
 	source_faces = extract_source_faces(source_vision_frames)
 	target_faces = select_faces(reference_vision_frame, target_vision_frame)
+	
+	# Log at info level for visibility (only log first frame to avoid spam)
+	if frame_number == 0:
+		logger.info(f'[face_swapper] Frame {frame_number}: {len(source_faces)} source faces, {len(target_faces)} target faces', __name__)
 
 	if source_faces and target_faces:
 		# Get cluster-to-source mapping from state_manager
 		cluster_source_mapping = state_manager.get_item('cluster_source_mapping')
 		
+		# Log at info level for visibility (only log first frame)
+		if frame_number == 0:
+			logger.info(f'[face_swapper] Frame {frame_number}: cluster_source_mapping={cluster_source_mapping}, source_count={len(source_faces)}', __name__)
+			logger.info(f'[face_swapper] cluster_source_mapping type: {type(cluster_source_mapping)}, is None: {cluster_source_mapping is None}, is empty: {cluster_source_mapping == {}}', __name__)
+		
 		# If no mapping or only one source, use backward-compatible behavior
 		if not cluster_source_mapping or len(source_faces) == 1:
+			if frame_number == 0:
+				if not cluster_source_mapping:
+					logger.warn(f'[face_swapper] Using backward-compatible mode: cluster_source_mapping is {cluster_source_mapping}', __name__)
+				if len(source_faces) == 1:
+					logger.warn(f'[face_swapper] Using backward-compatible mode: only 1 source face detected', __name__)
+				logger.info(f'[face_swapper] Using backward-compatible mode (averaged face)', __name__)
 			source_face = get_average_face(source_faces) if source_faces else None
 			if source_face:
 				for target_face in target_faces:
@@ -791,6 +817,9 @@ def process_frame(inputs : FaceSwapperInputs) -> ProcessorOutputs:
 			# Multi-face mode: map each target face to appropriate source face
 			from facefusion.video_face_database import get_cluster_for_face
 			
+			if frame_number == 0:
+				logger.info(f'[face_swapper] Using multi-face mode with {len(source_faces)} sources', __name__)
+			
 			for target_face_index, target_face in enumerate(target_faces):
 				target_face = scale_face(target_face, target_vision_frame, temp_vision_frame)
 				
@@ -798,29 +827,91 @@ def process_frame(inputs : FaceSwapperInputs) -> ProcessorOutputs:
 				source_face = None
 				
 				# Try to get cluster ID for this target face from database
+				# Since select_faces() may sort/filter faces, we need to match by position, not index
 				cluster_id = None
 				if frame_number is not None:
-					cluster_id = get_cluster_for_face(frame_number, target_face_index)
+					# Try to match by bounding box position to find the correct face_index in database
+					from facefusion.video_face_database import get_video_face_database
+					database = get_video_face_database()
+					
+					if database:
+						# Get all face instances for this frame from all clusters
+						frame_instances = []
+						for cluster in database['clusters']:
+							for inst in cluster['all_instances']:
+								if inst['frame_number'] == frame_number:
+									frame_instances.append(inst)
+						
+						# Match target_face to database instance by bounding box position
+						target_bbox = target_face.bounding_box
+						best_match = None
+						best_distance = float('inf')
+						
+						for inst in frame_instances:
+							inst_bbox = inst['bounding_box']
+							# Calculate center distance
+							target_center = ((target_bbox[0] + target_bbox[2]) / 2, (target_bbox[1] + target_bbox[3]) / 2)
+							inst_center = ((inst_bbox[0] + inst_bbox[2]) / 2, (inst_bbox[1] + inst_bbox[3]) / 2)
+							distance = ((target_center[0] - inst_center[0])**2 + (target_center[1] - inst_center[1])**2)**0.5
+							
+							if distance < best_distance:
+								best_distance = distance
+								best_match = inst
+						
+						# If we found a good match (within reasonable distance), use its cluster
+						if best_match and best_distance < 50:  # 50 pixels threshold
+							cluster_id = database['face_to_cluster'].get((frame_number, best_match['face_index']))
+							if frame_number < 5:
+								logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: matched to DB face_index {best_match["face_index"]}, cluster_id={cluster_id}', __name__)
+						else:
+							# Fallback: try original index-based lookup
+							cluster_id = get_cluster_for_face(frame_number, target_face_index)
+							if frame_number < 5:
+								logger.warn(f'[face_swapper] Frame {frame_number}, face {target_face_index}: no bbox match (dist={best_distance}), trying index lookup: cluster_id={cluster_id}', __name__)
+					else:
+						# No database, use index-based lookup
+						cluster_id = get_cluster_for_face(frame_number, target_face_index)
+					
+					if frame_number < 5:  # Log first few frames for debugging
+						logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: final cluster_id={cluster_id}, mapping={cluster_source_mapping}', __name__)
 				
 				# Get source face from mapping if cluster found
-				if cluster_id is not None and cluster_id in cluster_source_mapping:
-					source_index = cluster_source_mapping[cluster_id]
-					if 0 <= source_index < len(source_faces):
-						source_face = source_faces[source_index]
-				
-				# Fallback 1: Position-based matching (if no cluster mapping)
-				# Match by index: first target face → first source face, etc.
-				if source_face is None and target_face_index < len(source_faces):
-					source_face = source_faces[target_face_index]
-				
-				# Fallback 2: Use first source face or average
-				if source_face is None:
-					if len(source_faces) > 0:
-						source_face = source_faces[0]  # Use first source as default
+				# Handle both string and integer keys in mapping (due to JSON serialization)
+				if cluster_id is not None:
+					# Try integer key first, then string key
+					source_index = None
+					if cluster_id in cluster_source_mapping:
+						source_index = cluster_source_mapping[cluster_id]
+					elif str(cluster_id) in cluster_source_mapping:
+						source_index = cluster_source_mapping[str(cluster_id)]
+					
+					if source_index is not None:
+						if frame_number < 5:
+							logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: ✓ MAPPED cluster {cluster_id} → source {source_index}', __name__)
+						if 0 <= source_index < len(source_faces):
+							source_face = source_faces[source_index]
+						else:
+							if frame_number < 5:
+								logger.warn(f'[face_swapper] Frame {frame_number}, face {target_face_index}: source_index {source_index} out of range (max: {len(source_faces)-1})', __name__)
 					else:
-						source_face = get_average_face(source_faces)
+						# Cluster not mapped - skip replacement for this face
+						if frame_number < 5:
+							logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: ⊘ SKIP - cluster {cluster_id} not in mapping {list(cluster_source_mapping.keys())}', __name__)
+						source_face = None  # Explicitly set to None to skip
+				else:
+					# No cluster_id found - skip replacement
+					if frame_number < 5:
+						logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: ⊘ SKIP - no cluster_id found', __name__)
+					source_face = None
 				
+				# Only swap if we have a valid source face from mapping
+				# NO FALLBACKS - if not mapped, don't replace
 				if source_face:
 					temp_vision_frame = swap_face(source_face, target_face, temp_vision_frame)
+				elif frame_number < 5:
+					logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: ⊘ SKIPPED - no mapping, face not replaced', __name__)
+	else:
+		if frame_number == 0:
+			logger.warn(f'[face_swapper] Frame {frame_number}: no source faces ({len(source_faces)}) or target faces ({len(target_faces)})', __name__)
 
 	return temp_vision_frame, temp_vision_mask

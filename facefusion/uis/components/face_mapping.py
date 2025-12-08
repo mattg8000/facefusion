@@ -224,8 +224,11 @@ def assign_source_to_cluster() -> Tuple[gradio.Textbox, gradio.Gallery]:
 	
 	# Get or create mapping
 	cluster_source_mapping = state_manager.get_item('cluster_source_mapping') or {}
-	cluster_source_mapping[_selected_target_cluster_id] = _selected_source_index
+	# Ensure cluster_id is stored as integer (not string) for consistent lookup
+	cluster_source_mapping[int(_selected_target_cluster_id)] = int(_selected_source_index)
 	state_manager.set_item('cluster_source_mapping', cluster_source_mapping)
+	
+	logger.info(f'[face_mapping] Assigned cluster {_selected_target_cluster_id} → source {_selected_source_index}. Mapping: {cluster_source_mapping}', __name__)
 	
 	# Get cluster info for status
 	cluster = get_cluster(_selected_target_cluster_id)

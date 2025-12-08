@@ -287,7 +287,13 @@ def process_temp_frame(temp_frame_path : str, frame_number : int) -> bool:
 	if not numpy.any(source_voice_frame):
 		source_voice_frame = create_empty_audio_frame()
 
-	for processor_module in get_processors_modules(state_manager.get_item('processors')):
+	processors = state_manager.get_item('processors')
+	if frame_number == 0:
+		logger.info(f'[image_to_video] Processing frame {frame_number} with processors: {processors}', __name__)
+	
+	for processor_module in get_processors_modules(processors):
+		if frame_number == 0:
+			logger.info(f'[image_to_video] Calling processor: {processor_module.__name__}', __name__)
 		temp_vision_frame, temp_vision_mask = processor_module.process_frame(
 		{
 			'reference_vision_frame': reference_vision_frame,

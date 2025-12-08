@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 
 import gradio
 
-from facefusion import process_manager, state_manager, translator
+from facefusion import logger, process_manager, state_manager, translator
 from facefusion.args import collect_step_args
 from facefusion.core import process_step
 from facefusion.filesystem import is_directory, is_image, is_video
@@ -156,6 +156,12 @@ def run_continue() -> Tuple[gradio.Button, gradio.Button, gradio.Image, gradio.V
 	
 	# Set workflow mode to continue in step_args (so it persists during job execution)
 	step_args['workflow_mode'] = 'continue'
+	
+	# Pass cluster_source_mapping through step_args to ensure it's available during processing
+	cluster_source_mapping = state_manager.get_item('cluster_source_mapping')
+	if cluster_source_mapping:
+		step_args['cluster_source_mapping'] = cluster_source_mapping
+		logger.info(f'[instant_runner] Passing cluster_source_mapping to job: {cluster_source_mapping}', __name__)
 	
 	if job_manager.init_jobs(state_manager.get_item('jobs_path')):
 		create_and_run_job(step_args)

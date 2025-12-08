@@ -9,16 +9,23 @@ from facefusion.types import Face, FaceSelectorOrder, Gender, Race, Score, Visio
 
 def select_faces(reference_vision_frame : VisionFrame, target_vision_frame : VisionFrame) -> List[Face]:
 	target_faces = get_many_faces([ target_vision_frame ])
-
-	if state_manager.get_item('face_selector_mode') == 'many':
+	face_selector_mode = state_manager.get_item('face_selector_mode')
+	
+	# If we have cluster mappings, prefer 'many' mode to get all faces
+	cluster_source_mapping = state_manager.get_item('cluster_source_mapping')
+	if cluster_source_mapping and len(cluster_source_mapping) > 0:
+		# Use 'many' mode when cluster mappings exist to ensure all faces are available
 		return sort_and_filter_faces(target_faces)
 
-	if state_manager.get_item('face_selector_mode') == 'one':
+	if face_selector_mode == 'many':
+		return sort_and_filter_faces(target_faces)
+
+	if face_selector_mode == 'one':
 		target_face = get_one_face(sort_and_filter_faces(target_faces))
 		if target_face:
 			return [ target_face ]
 
-	if state_manager.get_item('face_selector_mode') == 'reference':
+	if face_selector_mode == 'reference':
 		reference_faces = get_many_faces([ reference_vision_frame ])
 		reference_faces = sort_and_filter_faces(reference_faces)
 		reference_face = get_one_face(reference_faces, state_manager.get_item('reference_face_position'))
@@ -26,7 +33,11 @@ def select_faces(reference_vision_frame : VisionFrame, target_vision_frame : Vis
 			match_faces = find_match_faces([ reference_face ], target_faces, state_manager.get_item('reference_face_distance'))
 			return match_faces
 
-	return []
+	# Default: if mode is None or unknown, return all faces (safer than empty list)
+	from facefusion import logger
+	if face_selector_mode is None:
+		logger.warn('face_selector_mode is None, defaulting to all faces', __name__)
+	return sort_and_filter_faces(target_faces)
 
 
 def find_match_faces(reference_faces : List[Face], target_faces : List[Face], face_distance : float) -> List[Face]:

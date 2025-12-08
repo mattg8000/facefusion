@@ -330,6 +330,11 @@ def process_step(job_id : str, step_index : int, step_args : Args) -> bool:
 	# Apply workflow_mode if present in step_args (for preprocess/continue workflows)
 	if 'workflow_mode' in step_args:
 		state_manager.set_item('workflow_mode', step_args.get('workflow_mode'))
+	
+	# Apply cluster_source_mapping if present in step_args (for multi-face mapping)
+	if 'cluster_source_mapping' in step_args:
+		state_manager.set_item('cluster_source_mapping', step_args.get('cluster_source_mapping'))
+		logger.info(f'[core] Set cluster_source_mapping from step_args: {step_args.get("cluster_source_mapping")}', __name__)
 
 	logger.info(translator.get('processing_step').format(step_current = step_index + 1, step_total = step_total), __name__)
 	if common_pre_check() and processors_pre_check():

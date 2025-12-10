@@ -132,12 +132,14 @@ def run_preprocess() -> Tuple[gradio.Button, gradio.Button, gradio.Image, gradio
 	"""Run preprocessing only: setup -> extract -> preprocess"""
 	step_args = collect_step_args()
 	output_path = step_args.get('output_path')
-
+	
 	if is_directory(step_args.get('output_path')):
 		step_args['output_path'] = suggest_output_path(step_args.get('output_path'), state_manager.get_item('target_path'))
 	
 	# Set workflow mode to preprocess_only in step_args (so it persists during job execution)
 	step_args['workflow_mode'] = 'preprocess_only'
+	# Explicitly enable face preprocessing for this workflow
+	step_args['enable_face_preprocessing'] = True
 	
 	if job_manager.init_jobs(state_manager.get_item('jobs_path')):
 		create_and_run_job(step_args)

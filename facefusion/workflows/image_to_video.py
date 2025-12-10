@@ -45,6 +45,9 @@ def process(start_time : float) -> ErrorCode:
 
 def process_preprocess_only(start_time : float) -> ErrorCode:
 	"""Preprocess-only workflow: setup -> extract -> preprocess (stops after building database)"""
+	# Explicitly enable preprocessing for this workflow
+	state_manager.set_item('enable_face_preprocessing', True)
+	
 	tasks =\
 	[
 		setup,
@@ -131,12 +134,15 @@ def preprocess_faces() -> ErrorCode:
 	"""
 	Preprocess video faces: scan all extracted frames and build face database with clustering.
 	This runs AFTER frames are extracted to disk for better performance.
-	This is optional and can be enabled/disabled via state_manager.
+	This should ONLY run when explicitly requested via the "Preprocess" button.
+	Otherwise, skip to preserve the original workflow (including face averaging for multiple sources).
 	"""
-	# Check if preprocessing is enabled (default: True for now, can be made configurable)
+	# Check if preprocessing is explicitly enabled
 	enable_preprocessing = state_manager.get_item('enable_face_preprocessing')
-	if enable_preprocessing is False:
-		logger.info('Face preprocessing disabled, skipping', __name__)
+	
+	# Only run preprocessing if explicitly enabled (via "Preprocess" button)
+	if enable_preprocessing is not True:
+		logger.debug('Face preprocessing skipped: not explicitly enabled (using original workflow)', __name__)
 		return 0
 	
 	# Only preprocess for videos

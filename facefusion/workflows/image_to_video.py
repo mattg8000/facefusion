@@ -190,6 +190,9 @@ def extract_frames() -> ErrorCode:
 
 
 def process_video() -> ErrorCode:
+	# Clear face tracker at start of video processing for fresh tracking
+	from facefusion.face_tracker import clear_face_tracker
+	clear_face_tracker()
 	temp_frame_paths = resolve_temp_frame_paths(state_manager.get_item('target_path'))
 
 	if temp_frame_paths:

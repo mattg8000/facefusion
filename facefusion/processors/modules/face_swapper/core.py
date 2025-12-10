@@ -785,7 +785,7 @@ def process_frame(inputs : FaceSwapperInputs) -> ProcessorOutputs:
 	
 	# Extract all source faces
 	source_faces = extract_source_faces(source_vision_frames)
-	target_faces = select_faces(reference_vision_frame, target_vision_frame)
+	target_faces = select_faces(reference_vision_frame, target_vision_frame, frame_number)
 	
 	# Log at info level for visibility (only log first frame to avoid spam)
 	if frame_number == 0:

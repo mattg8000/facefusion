@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 import numpy
 
@@ -7,7 +7,7 @@ from facefusion.face_analyser import get_many_faces, get_one_face
 from facefusion.types import Face, FaceSelectorOrder, Gender, Race, Score, VisionFrame
 
 
-def select_faces(reference_vision_frame : VisionFrame, target_vision_frame : VisionFrame) -> List[Face]:
+def select_faces(reference_vision_frame : VisionFrame, target_vision_frame : VisionFrame, frame_number : Optional[int] = None) -> List[Face]:
 	target_faces = get_many_faces([ target_vision_frame ])
 	face_selector_mode = state_manager.get_item('face_selector_mode')
 	
@@ -30,7 +30,8 @@ def select_faces(reference_vision_frame : VisionFrame, target_vision_frame : Vis
 		reference_faces = sort_and_filter_faces(reference_faces)
 		reference_face = get_one_face(reference_faces, state_manager.get_item('reference_face_position'))
 		if reference_face:
-			match_faces = find_match_faces([ reference_face ], target_faces, state_manager.get_item('reference_face_distance'))
+			# Use adaptive matching with cluster-based multiple references if available
+			match_faces = find_match_faces_adaptive([ reference_face ], target_faces, state_manager.get_item('reference_face_distance'), frame_number)
 			return match_faces
 
 	# Default: if mode is None or unknown, return all faces (safer than empty list)
@@ -41,6 +42,7 @@ def select_faces(reference_vision_frame : VisionFrame, target_vision_frame : Vis
 
 
 def find_match_faces(reference_faces : List[Face], target_faces : List[Face], face_distance : float) -> List[Face]:
+	"""Original matching function - for backward compatibility"""
 	match_faces : List[Face] = []
 
 	for reference_face in reference_faces:
@@ -49,6 +51,129 @@ def find_match_faces(reference_faces : List[Face], target_faces : List[Face], fa
 				if compare_faces(target_face, reference_face, face_distance):
 					match_faces.append(target_faces[index])
 
+	return match_faces
+
+
+def find_match_faces_adaptive(reference_faces : List[Face], target_faces : List[Face], base_face_distance : float, frame_number : Optional[int] = None) -> List[Face]:
+	"""
+	Adaptive matching with temporal smoothing and cluster-based multiple references.
+	
+	Uses:
+	- Multiple reference embeddings from cluster database (if available)
+	- Adaptive threshold based on recent match history
+	- Spatial continuity for better tracking
+	"""
+	from facefusion import logger
+	from facefusion.face_tracker import get_face_tracker, clear_face_tracker
+	from facefusion.video_face_database import get_video_face_database, get_cluster
+	
+	match_faces : List[Face] = []
+	database = get_video_face_database()
+	tracker = get_face_tracker()
+	
+	# If we have a database, try to find which cluster the reference face belongs to
+	# and use multiple faces from that cluster as references
+	cluster_reference_faces = []
+	reference_cluster_id = None
+	
+	if database and reference_faces:
+		reference_face = reference_faces[0]  # Use first reference face
+		
+		# Find which cluster this reference face belongs to by comparing with cluster centroids
+		best_cluster_id = None
+		best_distance = float('inf')
+		
+		for cluster in database['clusters']:
+			cluster_centroid = cluster['average_embedding']
+			ref_embedding = reference_face.embedding_norm
+			
+			# Calculate distance to cluster centroid
+			distance = 1 - numpy.dot(ref_embedding, cluster_centroid)
+			distance = float(numpy.interp(distance, [0, 2], [0, 1]))
+			
+			# Use a threshold to find matching cluster (e.g., 0.4)
+			if distance < 0.4 and distance < best_distance:
+				best_distance = distance
+				best_cluster_id = cluster['cluster_id']
+		
+		# If we found a matching cluster, use multiple faces from it as references
+		if best_cluster_id is not None:
+			reference_cluster_id = best_cluster_id
+			cluster = get_cluster(best_cluster_id)
+			if cluster:
+				# Get representative faces from the cluster (best quality ones)
+				instances = sorted(cluster['all_instances'], 
+				                  key=lambda inst: inst['face'].score_set.get('detector', 0), 
+				                  reverse=True)
+				# Use top 3-5 faces from cluster as references
+				for inst in instances[:5]:
+					cluster_reference_faces.append(inst['face'])
+				
+				if frame_number is None or frame_number < 3:
+					logger.debug(f'[face_selector] Using {len(cluster_reference_faces)} reference faces from cluster {best_cluster_id}', __name__)
+	
+	# Use cluster references if available, otherwise use original reference
+	effective_reference_faces = cluster_reference_faces if cluster_reference_faces else reference_faces
+	
+	# Match target faces using adaptive threshold
+	for index, target_face in enumerate(target_faces):
+		# Try to find which cluster this target face belongs to
+		target_cluster_id = None
+		if database and frame_number is not None:
+			# Use database lookup for accurate cluster ID
+			from facefusion.video_face_database import get_cluster_for_face
+			target_cluster_id = get_cluster_for_face(frame_number, index)
+		
+		# Fallback: find closest cluster by embedding
+		if target_cluster_id is None and database:
+			best_cluster_id = None
+			best_distance = float('inf')
+			
+			for cluster in database['clusters']:
+				cluster_centroid = cluster['average_embedding']
+				target_embedding = target_face.embedding_norm
+				
+				distance = 1 - numpy.dot(target_embedding, cluster_centroid)
+				distance = float(numpy.interp(distance, [0, 2], [0, 1]))
+				
+				if distance < best_distance:
+					best_distance = distance
+					best_cluster_id = cluster['cluster_id']
+			
+			# If target is close to a cluster, use that cluster
+			if best_cluster_id is not None and best_distance < 0.5:
+				target_cluster_id = best_cluster_id
+		
+		# Get adaptive threshold for this cluster
+		if target_cluster_id is not None:
+			adaptive_threshold = tracker.get_adaptive_threshold(target_cluster_id, base_face_distance)
+		else:
+			adaptive_threshold = base_face_distance
+		
+		# Compare with all reference faces (use minimum distance)
+		min_distance = float('inf')
+		best_reference = None
+		
+		for ref_face in effective_reference_faces:
+			if ref_face:
+				distance = calculate_face_distance(target_face, ref_face)
+				distance = float(numpy.interp(distance, [0, 2], [0, 1]))
+				if distance < min_distance:
+					min_distance = distance
+					best_reference = ref_face
+		
+		# Check if match (using adaptive threshold)
+		if min_distance < adaptive_threshold:
+			match_faces.append(target_faces[index])
+			
+			# Record successful match for temporal tracking
+			if target_cluster_id is not None and frame_number is not None:
+				bbox = target_face.bounding_box
+				tracker.record_match(frame_number, index, target_cluster_id, tuple(bbox))
+		elif target_cluster_id is not None and frame_number is not None:
+			# Record failed match attempt
+			tracker.record_miss(frame_number, target_cluster_id)
+	
 	return match_faces
 
 

@@ -8,7 +8,54 @@ from facefusion.types import Face, FaceSelectorOrder, Gender, Race, Score, Visio
 
 
 def select_faces(reference_vision_frame : VisionFrame, target_vision_frame : VisionFrame, frame_number : Optional[int] = None) -> List[Face]:
+	# Check for forced replacements first
+	forced_faces = []
+	if frame_number is not None:
+		from facefusion.forced_replacements import get_forced_replacements_for_frame
+		from facefusion.face_analyser import detect_face_in_region
+		
+		forced_replacements = get_forced_replacements_for_frame(frame_number)
+		for forced_repl in forced_replacements:
+			forced_face = detect_face_in_region(
+				target_vision_frame,
+				forced_repl['bounding_box'],
+				forced_repl.get('detector_score', 0.1),
+				forced_repl.get('detector_model')
+			)
+			if forced_face:
+				forced_faces.append(forced_face)
+	
+	# Get automatically detected faces
 	target_faces = get_many_faces([ target_vision_frame ])
+	
+	# Merge forced faces with automatically detected faces (forced first)
+	# Remove duplicates based on bounding box overlap
+	if forced_faces:
+		# Add forced faces first
+		all_faces = forced_faces.copy()
+		
+		# Add automatic faces that don't overlap significantly with forced faces
+		for auto_face in target_faces:
+			is_duplicate = False
+			auto_bbox = auto_face.bounding_box
+			auto_center = ((auto_bbox[0] + auto_bbox[2]) / 2, (auto_bbox[1] + auto_bbox[3]) / 2)
+			auto_area = (auto_bbox[2] - auto_bbox[0]) * (auto_bbox[3] - auto_bbox[1])
+			
+			for forced_face in forced_faces:
+				forced_bbox = forced_face.bounding_box
+				forced_center = ((forced_bbox[0] + forced_bbox[2]) / 2, (forced_bbox[1] + forced_bbox[3]) / 2)
+				distance = ((auto_center[0] - forced_center[0])**2 + (auto_center[1] - forced_center[1])**2)**0.5
+				
+				# If centers are within 50 pixels, consider it a duplicate
+				if distance < 50:
+					is_duplicate = True
+					break
+			
+			if not is_duplicate:
+				all_faces.append(auto_face)
+		
+		target_faces = all_faces
+	
 	face_selector_mode = state_manager.get_item('face_selector_mode')
 	
 	# If we have cluster mappings, prefer 'many' mode to get all faces

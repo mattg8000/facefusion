@@ -826,83 +826,112 @@ def process_frame(inputs : FaceSwapperInputs) -> ProcessorOutputs:
 				# Find which source face to use for this target face
 				source_face = None
 				
-				# Try to get cluster ID for this target face from database
-				# Since select_faces() may sort/filter faces, we need to match by position, not index
-				cluster_id = None
-				if frame_number is not None:
-					# Try to match by bounding box position to find the correct face_index in database
-					from facefusion.video_face_database import get_video_face_database
-					database = get_video_face_database()
-					
-					if database:
-						# Get all face instances for this frame from all clusters
-						frame_instances = []
-						for cluster in database['clusters']:
-							for inst in cluster['all_instances']:
-								if inst['frame_number'] == frame_number:
-									frame_instances.append(inst)
-						
-						# Match target_face to database instance by bounding box position
-						target_bbox = target_face.bounding_box
-						best_match = None
-						best_distance = float('inf')
-						
-						for inst in frame_instances:
-							inst_bbox = inst['bounding_box']
-							# Calculate center distance
-							target_center = ((target_bbox[0] + target_bbox[2]) / 2, (target_bbox[1] + target_bbox[3]) / 2)
-							inst_center = ((inst_bbox[0] + inst_bbox[2]) / 2, (inst_bbox[1] + inst_bbox[3]) / 2)
-							distance = ((target_center[0] - inst_center[0])**2 + (target_center[1] - inst_center[1])**2)**0.5
-							
-							if distance < best_distance:
-								best_distance = distance
-								best_match = inst
-						
-						# If we found a good match (within reasonable distance), use its cluster
-						if best_match and best_distance < 50:  # 50 pixels threshold
-							cluster_id = database['face_to_cluster'].get((frame_number, best_match['face_index']))
-							if frame_number < 5:
-								logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: matched to DB face_index {best_match["face_index"]}, cluster_id={cluster_id}', __name__)
-						else:
-							# Fallback: try original index-based lookup
-							cluster_id = get_cluster_for_face(frame_number, target_face_index)
-							if frame_number < 5:
-								logger.warn(f'[face_swapper] Frame {frame_number}, face {target_face_index}: no bbox match (dist={best_distance}), trying index lookup: cluster_id={cluster_id}', __name__)
-					else:
-						# No database, use index-based lookup
-						cluster_id = get_cluster_for_face(frame_number, target_face_index)
-					
-					if frame_number < 5:  # Log first few frames for debugging
-						logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: final cluster_id={cluster_id}, mapping={cluster_source_mapping}', __name__)
+				# Check if this is a forced replacement face first
+				from facefusion.forced_replacements import get_forced_replacements_for_frame
+				forced_replacements = get_forced_replacements_for_frame(frame_number) if frame_number is not None else []
 				
-				# Get source face from mapping if cluster found
-				# Handle both string and integer keys in mapping (due to JSON serialization)
-				if cluster_id is not None:
-					# Try integer key first, then string key
-					source_index = None
-					if cluster_id in cluster_source_mapping:
-						source_index = cluster_source_mapping[cluster_id]
-					elif str(cluster_id) in cluster_source_mapping:
-						source_index = cluster_source_mapping[str(cluster_id)]
+				# Match forced replacement by bounding box position
+				forced_repl = None
+				if forced_replacements:
+					target_bbox = target_face.bounding_box
+					target_center = ((target_bbox[0] + target_bbox[2]) / 2, (target_bbox[1] + target_bbox[3]) / 2)
 					
-					if source_index is not None:
-						if frame_number < 5:
-							logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: ✓ MAPPED cluster {cluster_id} → source {source_index}', __name__)
-						if 0 <= source_index < len(source_faces):
-							source_face = source_faces[source_index]
+					for fr in forced_replacements:
+						fr_bbox = fr['bounding_box']
+						fr_center = ((fr_bbox[0] + fr_bbox[2]) / 2, (fr_bbox[1] + fr_bbox[3]) / 2)
+						distance = ((target_center[0] - fr_center[0])**2 + (target_center[1] - fr_center[1])**2)**0.5
+						
+						# If within 50 pixels, this is the forced replacement
+						if distance < 50:
+							forced_repl = fr
+							break
+				
+				# If this is a forced replacement, use its source face (takes priority)
+				if forced_repl:
+					source_index = forced_repl['source_face_index']
+					if 0 <= source_index < len(source_faces):
+						source_face = source_faces[source_index]
+						if frame_number is not None and frame_number < 5:
+							logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: Using forced replacement source {source_index}', __name__)
+				
+				# Otherwise, try to get cluster ID for this target face from database
+				if source_face is None:
+					# Since select_faces() may sort/filter faces, we need to match by position, not index
+					cluster_id = None
+					if frame_number is not None:
+						# Try to match by bounding box position to find the correct face_index in database
+						from facefusion.video_face_database import get_video_face_database
+						database = get_video_face_database()
+						
+						if database:
+							# Get all face instances for this frame from all clusters
+							frame_instances = []
+							for cluster in database['clusters']:
+								for inst in cluster['all_instances']:
+									if inst['frame_number'] == frame_number:
+										frame_instances.append(inst)
+							
+							# Match target_face to database instance by bounding box position
+							target_bbox = target_face.bounding_box
+							best_match = None
+							best_distance = float('inf')
+							
+							for inst in frame_instances:
+								inst_bbox = inst['bounding_box']
+								# Calculate center distance
+								target_center = ((target_bbox[0] + target_bbox[2]) / 2, (target_bbox[1] + target_bbox[3]) / 2)
+								inst_center = ((inst_bbox[0] + inst_bbox[2]) / 2, (inst_bbox[1] + inst_bbox[3]) / 2)
+								distance = ((target_center[0] - inst_center[0])**2 + (target_center[1] - inst_center[1])**2)**0.5
+								
+								if distance < best_distance:
+									best_distance = distance
+									best_match = inst
+							
+							# If we found a good match (within reasonable distance), use its cluster
+							if best_match and best_distance < 50:  # 50 pixels threshold
+								cluster_id = database['face_to_cluster'].get((frame_number, best_match['face_index']))
+								if frame_number < 5:
+									logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: matched to DB face_index {best_match["face_index"]}, cluster_id={cluster_id}', __name__)
+							else:
+								# Fallback: try original index-based lookup
+								cluster_id = get_cluster_for_face(frame_number, target_face_index)
+								if frame_number < 5:
+									logger.warn(f'[face_swapper] Frame {frame_number}, face {target_face_index}: no bbox match (dist={best_distance}), trying index lookup: cluster_id={cluster_id}', __name__)
 						else:
+							# No database, use index-based lookup
+							cluster_id = get_cluster_for_face(frame_number, target_face_index)
+						
+						if frame_number < 5:  # Log first few frames for debugging
+							logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: final cluster_id={cluster_id}, mapping={cluster_source_mapping}', __name__)
+					
+					# Get source face from mapping if cluster found
+					# Handle both string and integer keys in mapping (due to JSON serialization)
+					if cluster_id is not None:
+						# Try integer key first, then string key
+						source_index = None
+						if cluster_id in cluster_source_mapping:
+							source_index = cluster_source_mapping[cluster_id]
+						elif str(cluster_id) in cluster_source_mapping:
+							source_index = cluster_source_mapping[str(cluster_id)]
+						
+						if source_index is not None:
 							if frame_number < 5:
-								logger.warn(f'[face_swapper] Frame {frame_number}, face {target_face_index}: source_index {source_index} out of range (max: {len(source_faces)-1})', __name__)
+								logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: ✓ MAPPED cluster {cluster_id} → source {source_index}', __name__)
+							if 0 <= source_index < len(source_faces):
+								source_face = source_faces[source_index]
+							else:
+								if frame_number < 5:
+									logger.warn(f'[face_swapper] Frame {frame_number}, face {target_face_index}: source_index {source_index} out of range (max: {len(source_faces)-1})', __name__)
+						else:
+							# Cluster not mapped - skip replacement for this face
+							if frame_number < 5:
+								logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: ⊘ SKIP - cluster {cluster_id} not in mapping {list(cluster_source_mapping.keys())}', __name__)
+							source_face = None  # Explicitly set to None to skip
 					else:
-						# Cluster not mapped - skip replacement for this face
+						# No cluster_id found - skip replacement
 						if frame_number < 5:
-							logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: ⊘ SKIP - cluster {cluster_id} not in mapping {list(cluster_source_mapping.keys())}', __name__)
-						source_face = None  # Explicitly set to None to skip
-				else:
-					# No cluster_id found - skip replacement
-					if frame_number < 5:
-						logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: ⊘ SKIP - no cluster_id found', __name__)
-					source_face = None
+							logger.info(f'[face_swapper] Frame {frame_number}, face {target_face_index}: ⊘ SKIP - no cluster_id found', __name__)
+						source_face = None
 				
 				# Only swap if we have a valid source face from mapping
 				# NO FALLBACKS - if not mapped, don't replace

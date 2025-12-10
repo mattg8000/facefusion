@@ -76,6 +76,30 @@ Matrix : TypeAlias = NDArray[Any]
 Anchors : TypeAlias = NDArray[Any]
 Translation : TypeAlias = NDArray[Any]
 
+# Forced Face Replacement Types
+ForcedFaceReplacement = TypedDict('ForcedFaceReplacement',
+{
+	'frame_number' : int,
+	'bounding_box' : Tuple[float, float, float, float],  # (x1, y1, x2, y2)
+	'source_face_index' : int,
+	'detector_score' : float,  # Very relaxed score (e.g., 0.1)
+	'detector_model' : Optional[str]  # Optional: specific detector to use
+})
+
+ForcedReplacements : TypeAlias = Dict[int, List[ForcedFaceReplacement]]  # frame_number -> List[ForcedFaceReplacement]
+
+# Forced Face Replacement Types
+ForcedFaceReplacement = TypedDict('ForcedFaceReplacement',
+{
+	'frame_number' : int,
+	'bounding_box' : Tuple[float, float, float, float],  # (x1, y1, x2, y2)
+	'source_face_index' : int,
+	'detector_score' : float,  # Very relaxed score (e.g., 0.1)
+	'detector_model' : Optional[str]  # Optional: specific detector to use
+})
+
+ForcedReplacements : TypeAlias = Dict[int, List[ForcedFaceReplacement]]  # frame_number -> List[ForcedFaceReplacement]
+
 AudioBuffer : TypeAlias = bytes
 Audio : TypeAlias = NDArray[Any]
 AudioChunk : TypeAlias = NDArray[Any]
@@ -324,7 +348,8 @@ StateKey = Literal\
 	'halt_on_error',
 	'job_id',
 	'job_status',
-	'step_index'
+	'step_index',
+	'forced_face_replacements'
 ]
 State = TypedDict('State',
 {
@@ -394,7 +419,8 @@ State = TypedDict('State',
 	'halt_on_error' : bool,
 	'job_id' : str,
 	'job_status' : JobStatus,
-	'step_index' : int
+	'step_index' : int,
+	'forced_face_replacements' : Optional[ForcedReplacements]
 })
 ApplyStateItem : TypeAlias = Callable[[Any, Any], None]
 StateSet : TypeAlias = Dict[AppContext, State]

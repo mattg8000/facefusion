@@ -102,6 +102,8 @@ def apply_args(args : Args, apply_state_item : ApplyStateItem) -> None:
 	# processors
 	available_processors = [ get_file_name(file_path) for file_path in resolve_file_paths('facefusion/processors/modules') ]
 	apply_state_item('processors', args.get('processors'))
+	# forced face replacements
+	apply_state_item('forced_face_replacements', args.get('forced_face_replacements'))
 	for processor_module in get_processors_modules(available_processors):
 		processor_module.apply_args(args, apply_state_item)
 	# uis

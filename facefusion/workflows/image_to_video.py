@@ -193,6 +193,13 @@ def process_video() -> ErrorCode:
 	# Clear face tracker at start of video processing for fresh tracking
 	from facefusion.face_tracker import clear_face_tracker
 	clear_face_tracker()
+	
+	# Load forced replacements for this video
+	from facefusion.forced_replacements import load_forced_replacements
+	target_path = state_manager.get_item('target_path')
+	if target_path and is_video(target_path):
+		replacements = load_forced_replacements(target_path)
+		state_manager.set_item('forced_face_replacements', replacements)
 	temp_frame_paths = resolve_temp_frame_paths(state_manager.get_item('target_path'))
 
 	if temp_frame_paths:

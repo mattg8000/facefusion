@@ -891,3 +891,24 @@ Face replacement options (detector, enhancement, model, etc.) are fixed for the 
 - Face re-identification after long occlusions
 - Real-time processing optimizations
 
+---
+
+## Manual Face Replacement Override
+
+**Status:** Planning Phase  
+**See:** `PlanningDocs/manual-face-override.md` for detailed planning
+
+### Overview
+Feature to manually force face detection and replacement for specific frames where automatic detection fails. Users can highlight an area, select a source face, and force replacement that persists across processing runs.
+
+### Key Features
+- Frame navigation and selection
+- Area highlighting (bounding box selection)
+- Forced detection with relaxed settings (score ~0.1)
+- Source face selection
+- Persistence across re-runs
+
+### Implementation Status
+- Planning complete
+- Ready for implementation
+

@@ -119,6 +119,36 @@ class FaceMatchHistory:
 			
 			distance = ((last_center[0] - current_center[0])**2 + (last_center[1] - current_center[1])**2)**0.5
 			return distance
+	
+	def is_position_close(self, bounding_box: Tuple[float, float, float, float], max_distance: float = 50.0) -> bool:
+		"""
+		Check if a bounding box is close to the last known position.
+		Used for position-based fallback matching.
+		
+		Args:
+			bounding_box: Current bounding box (x1, y1, x2, y2)
+			max_distance: Maximum allowed distance in pixels
+		
+		Returns:
+			True if position is close enough for fallback matching
+		"""
+		distance = self.get_spatial_distance(bounding_box)
+		return distance < max_distance
+	
+	def was_recently_matched(self, current_frame: int, window_size: int = 3) -> bool:
+		"""
+		Check if this face was matched in recent frames.
+		Used to determine if position-based fallback should be applied.
+		
+		Args:
+			current_frame: Current frame number
+			window_size: Number of recent frames to check
+		
+		Returns:
+			True if matched in recent frames
+		"""
+		with self._lock:
+			return self.get_temporal_match_count(current_frame, window_size) > 0
 
 
 class FaceTracker:
@@ -173,6 +203,38 @@ class FaceTracker:
 		"""Get cluster ID for a face in a specific frame (from recent history, thread-safe)"""
 		with self._lock:
 			return self.frame_face_to_cluster.get((frame_number, face_index))
+	
+	def find_cluster_by_position(self, bounding_box: Tuple[float, float, float, float], current_frame: int, max_distance: float = 50.0, window_size: int = 3) -> Optional[int]:
+		"""
+		Find a cluster that was recently matched at a nearby position.
+		Used for position-based fallback when embedding matching fails.
+		
+		Args:
+			bounding_box: Current bounding box (x1, y1, x2, y2)
+			current_frame: Current frame number
+			max_distance: Maximum allowed spatial distance in pixels
+			window_size: Number of recent frames to consider
+		
+		Returns:
+			Cluster ID if found, None otherwise
+		"""
+		with self._lock:
+			best_cluster_id = None
+			best_distance = float('inf')
+			
+			for cluster_id, history in self.cluster_histories.items():
+				# Check if this cluster was recently matched
+				if not history.was_recently_matched(current_frame, window_size):
+					continue
+				
+				# Check if position is close
+				if history.is_position_close(bounding_box, max_distance):
+					distance = history.get_spatial_distance(bounding_box)
+					if distance < best_distance:
+						best_distance = distance
+						best_cluster_id = cluster_id
+			
+			return best_cluster_id
 	
 	def clear(self) -> None:
 		"""Clear all tracking history (thread-safe)"""

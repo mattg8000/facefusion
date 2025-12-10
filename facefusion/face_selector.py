@@ -171,9 +171,63 @@ def find_match_faces_adaptive(reference_faces : List[Face], target_faces : List[
 			if target_cluster_id is not None and frame_number is not None:
 				bbox = target_face.bounding_box
 				tracker.record_match(frame_number, index, target_cluster_id, tuple(bbox))
-		elif target_cluster_id is not None and frame_number is not None:
-			# Record failed match attempt
-			tracker.record_miss(frame_number, target_cluster_id)
+		else:
+			# Embedding matching failed - try position-based fallback
+			# This helps maintain continuity when embedding matching temporarily fails
+			use_position_fallback = False
+			
+			if frame_number is not None:
+				bbox = target_face.bounding_box
+				
+				# If we have a database and reference cluster, check position-based match
+				if database and reference_cluster_id is not None:
+					position_cluster_id = tracker.find_cluster_by_position(
+						tuple(bbox), 
+						frame_number,
+						max_distance=50.0,  # 50 pixels max distance
+						window_size=3  # Check last 3 frames
+					)
+					
+					# Only use position fallback if it matches the reference cluster
+					# This prevents matching wrong faces
+					if position_cluster_id == reference_cluster_id:
+						use_position_fallback = True
+						fallback_cluster_id = reference_cluster_id
+						
+						if frame_number < 5:
+							logger.debug(f'[face_selector] Frame {frame_number}: Using position-based fallback for cluster {reference_cluster_id}', __name__)
+				
+				# If no database but we have target_cluster_id, still check position
+				# This helps even when preprocessing wasn't run
+				elif target_cluster_id is not None:
+					# Check if this cluster was recently matched at nearby position
+					# Use find_cluster_by_position which handles locking internally
+					position_cluster_id = tracker.find_cluster_by_position(
+						tuple(bbox),
+						frame_number,
+						max_distance=50.0,
+						window_size=3
+					)
+					
+					if position_cluster_id == target_cluster_id:
+						use_position_fallback = True
+						fallback_cluster_id = target_cluster_id
+						
+						if frame_number < 5:
+							logger.debug(f'[face_selector] Frame {frame_number}: Using position-based fallback for cluster {target_cluster_id} (no database)', __name__)
+				
+				# Apply position-based fallback
+				if use_position_fallback:
+					match_faces.append(target_faces[index])
+					
+					# Record as position-based match (still record for tracking)
+					tracker.record_match(frame_number, index, fallback_cluster_id, tuple(bbox))
+				elif target_cluster_id is not None:
+					# Record failed match attempt
+					tracker.record_miss(frame_number, target_cluster_id)
+			elif target_cluster_id is not None and frame_number is not None:
+				# Record failed match attempt
+				tracker.record_miss(frame_number, target_cluster_id)
 	
 	return match_faces
 

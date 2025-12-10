@@ -144,9 +144,10 @@ def find_match_faces_adaptive(reference_faces : List[Face], target_faces : List[
 			if best_cluster_id is not None and best_distance < 0.5:
 				target_cluster_id = best_cluster_id
 		
-		# Get adaptive threshold for this cluster
-		if target_cluster_id is not None:
-			adaptive_threshold = tracker.get_adaptive_threshold(target_cluster_id, base_face_distance)
+		# Get adaptive threshold for this cluster (using frame_number for temporal smoothing)
+		if target_cluster_id is not None and frame_number is not None:
+			# Use frame_number for proper temporal window calculation (works with parallel processing)
+			adaptive_threshold = tracker.get_adaptive_threshold(target_cluster_id, frame_number, base_face_distance)
 		else:
 			adaptive_threshold = base_face_distance
 		

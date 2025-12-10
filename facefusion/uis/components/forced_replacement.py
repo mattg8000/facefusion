@@ -601,11 +601,25 @@ def detect_face_in_area(frame_number: int, bbox_str: str) -> Tuple[gradio.Image,
 	return gradio.Image(value=frame_rgb), gradio.Textbox(value=bbox_str)
 
 
-def save_forced_replacement(frame_number: int, bbox_str: str, source_index: Optional[int]) -> Tuple[gradio.Dataframe, gradio.Textbox, gradio.Dropdown]:
+def save_forced_replacement(frame_number: int, bbox_str: str, source_index: Optional[str]) -> Tuple[gradio.Dataframe, gradio.Textbox, gradio.Dropdown]:
 	"""Save a forced replacement"""
-	if source_index is None:
+	if source_index is None or source_index == '':
 		logger.warn('No source face selected', __name__)
 		return update_replacement_list(), gradio.Textbox(value=bbox_str), gradio.Dropdown()
+	
+	# Parse source index from dropdown choice (format: "Source 0: filename.jpg")
+	try:
+		if isinstance(source_index, str):
+			# Extract index from string like "Source 0: filename.jpg"
+			index_str = source_index.split(':')[0].replace('Source', '').strip()
+			source_index_int = int(index_str)
+		else:
+			source_index_int = int(source_index)
+	except (ValueError, AttributeError, TypeError) as e:
+		logger.error(f'Could not parse source index from: {source_index} ({type(source_index)}): {e}', __name__)
+		return update_replacement_list(), gradio.Textbox(value=bbox_str), gradio.Dropdown()
+	
+	source_index = source_index_int
 	
 	# Parse bounding box - try to get from coordinate inputs if bbox_str is empty
 	if not bbox_str or not bbox_str.strip():
@@ -635,7 +649,7 @@ def save_forced_replacement(frame_number: int, bbox_str: str, source_index: Opti
 	replacement: ForcedFaceReplacement = {
 		'frame_number': frame_number,
 		'bounding_box': bbox,
-		'source_face_index': int(source_index),
+		'source_face_index': source_index,  # Already parsed as int above
 		'detector_score': 0.1,
 		'detector_model': None
 	}
